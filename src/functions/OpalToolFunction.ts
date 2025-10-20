@@ -3,7 +3,7 @@ import { logger, Function, Response} from '@zaiusinc/app-sdk';
 // import { parseExcelFromCmp } from 'OpalToolExcelParse.ts';
 import { getAssetFromCMP } from '../cmp';
 import axios from 'axios';
-// import xlsx from 'xlsx';
+import xlsx from 'xlsx';
 
 
 interface AssetParameters {
@@ -33,7 +33,14 @@ const discoveryPayload = {
         { 'name': 'asset_id', 'type': 'string', 'description': 'CMP asset ID', 'required': true }
       ],
       'endpoint': '/tools/get-excel-details',
-      'http_method': 'POST'
+      'http_method': 'POST',
+      'auth_requirements': [
+        {
+          'provider': 'OptiID',
+          'scope_bundle': 'default',
+          'required': true
+        }
+      ]
     }
   ]
 };
@@ -96,17 +103,57 @@ export class OpalToolFunction extends Function {
 
       const assetDetails = await getAssetFromCMP(asset_id, authData);
       const dataImportBuffer = await this.downloadFileAsBuffer(assetDetails.url);
-      // const workbook = xlsx.read(dataImportBuffer);
-      // const sheetName = workbook.SheetNames['Launch Data'];
-      // const sheetName = 'Launch Data';
-      // const rows: any = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
-      logger.info('Extracted asset data from CMP ', assetDetails);
-      logger.info('Extracted dataImportBuffer', dataImportBuffer);
-      return { assetDetails };
+      const workbook = xlsx.read(dataImportBuffer);
+
+      // Load the correct sheet
+      const sheetName = 'Launch Data';
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) {
+        throw new Error(`Sheet "${sheetName}" not found in Excel file.`);
+      }
+
+      // Convert to JSON with proper typing
+      const rows = xlsx.utils.sheet_to_json<Record<string, any>>(sheet);
+
+      const filteredData = rows
+        .filter((row) => row['Campaign'] && row['Launch Date'])
+        .map((row) => ({
+          taskName: row['Campaign'],
+          // We call the helper method formatExcelDate() to convert "01/11/2024" → "Nov 1, 2024"
+          // So this change is purely for formatting the date
+          dueDate: this.formatExcelDate(row['Launch Date']),
+
+          // Note: `row` represents a single row from the Excel sheet
+          // Each row is an object with column names as keys
+          // We access the "Launch Date" column for this row via row['Launch Date']
+        }));
+
+      logger.info('Filtered rows (task name + due date):', filteredData);
+
+      // Return the filtered data
+      return { filteredData };
     } catch (error: any) {
       console.error('Error fetching CMP asset data:', error.message);
       throw new Error('Failed to fetch CMP asset data');
     }
+  }
+
+  // added this helper method to format Excel date strings
+  private formatExcelDate(value: string): string {
+    if (!value) return '';
+
+    // Split the input "DD/MM/YYYY" into parts
+    const [day, month, year] = value.split('/').map(Number);
+
+    // Create a JavaScript Date object (months are 0-indexed)
+    const date = new Date(year, month - 1, day);
+
+    // Format as "Mon D, YYYY"
+    return date.toLocaleDateString('en-US', {
+      month: 'short',  // "Nov"
+      day: 'numeric',  // 1
+      year: 'numeric'  // 2024
+    });
   }
 
   private extractAuthData() {

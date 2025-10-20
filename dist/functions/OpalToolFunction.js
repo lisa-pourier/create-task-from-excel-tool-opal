@@ -9,18 +9,26 @@ const app_sdk_1 = require("@zaiusinc/app-sdk");
 // import { parseExcelFromCmp } from 'OpalToolExcelParse.ts';
 const cmp_1 = require("../cmp");
 const axios_1 = __importDefault(require("axios"));
+const xlsx_1 = __importDefault(require("xlsx"));
 // Define Opal tool metadata  - list of tools and their parameters
 const discoveryPayload = {
     'functions': [
         // LP Added: query-excel endpoint to fetch campaigns from CMP Excel
         {
-            'name': 'query-excel',
+            'name': 'get_excel_details',
             'description': 'Fetches and filters campaigns from the CMP Excel asset',
             'parameters': [
                 { 'name': 'asset_id', 'type': 'string', 'description': 'CMP asset ID', 'required': true }
             ],
-            'endpoint': '/tools/query-excel',
-            'http_method': 'POST'
+            'endpoint': '/tools/get-excel-details',
+            'http_method': 'POST',
+            'auth_requirements': [
+                {
+                    'provider': 'OptiID',
+                    'scope_bundle': 'default',
+                    'required': true
+                }
+            ]
         }
     ]
 };
@@ -57,7 +65,7 @@ class OpalToolFunction extends app_sdk_1.Function {
         if (this.request.path === '/discovery') {
             return new app_sdk_1.Response(200, discoveryPayload);
         }
-        else if (this.request.path === '/tools/query-excel') {
+        else if (this.request.path === '/tools/get-excel-details') {
             // LP addded:call to the helper function
             const params = this.extractParameters();
             const authData = this.extractAuthData();
@@ -76,18 +84,49 @@ class OpalToolFunction extends app_sdk_1.Function {
             }
             const assetDetails = await (0, cmp_1.getAssetFromCMP)(asset_id, authData);
             const dataImportBuffer = await this.downloadFileAsBuffer(assetDetails.url);
-            // const workbook = xlsx.read(dataImportBuffer);
-            // const sheetName = workbook.SheetNames['Launch Data'];
-            // const sheetName = 'Launch Data';
-            // const rows: any = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
-            app_sdk_1.logger.info('Extracted asset data from CMP ', assetDetails);
-            app_sdk_1.logger.info('Extracted dataImportBuffer', dataImportBuffer);
-            return { assetDetails };
+            const workbook = xlsx_1.default.read(dataImportBuffer);
+            // Load the correct sheet
+            const sheetName = 'Launch Data';
+            const sheet = workbook.Sheets[sheetName];
+            if (!sheet) {
+                throw new Error(`Sheet "${sheetName}" not found in Excel file.`);
+            }
+            // Convert to JSON with proper typing
+            const rows = xlsx_1.default.utils.sheet_to_json(sheet);
+            const filteredData = rows
+                .filter((row) => row['Campaign'] && row['Launch Date'])
+                .map((row) => ({
+                taskName: row['Campaign'],
+                // We call the helper method formatExcelDate() to convert "01/11/2024" → "Nov 1, 2024"
+                // So this change is purely for formatting the date
+                dueDate: this.formatExcelDate(row['Launch Date']),
+                // Note: `row` represents a single row from the Excel sheet
+                // Each row is an object with column names as keys
+                // We access the "Launch Date" column for this row via row['Launch Date']
+            }));
+            app_sdk_1.logger.info('Filtered rows (task name + due date):', filteredData);
+            // Return the filtered data
+            return { filteredData };
         }
         catch (error) {
-            console.error('Error fetching CMP task data:', error.message);
-            throw new Error('Failed to fetch CMP task data');
+            console.error('Error fetching CMP asset data:', error.message);
+            throw new Error('Failed to fetch CMP asset data');
         }
+    }
+    // added this helper method to format Excel date strings
+    formatExcelDate(value) {
+        if (!value)
+            return '';
+        // Split the input "DD/MM/YYYY" into parts
+        const [day, month, year] = value.split('/').map(Number);
+        // Create a JavaScript Date object (months are 0-indexed)
+        const date = new Date(year, month - 1, day);
+        // Format as "Mon D, YYYY"
+        return date.toLocaleDateString('en-US', {
+            month: 'short', // "Nov"
+            day: 'numeric', // 1
+            year: 'numeric' // 2024
+        });
     }
     extractAuthData() {
         // Extract auth data from the request headers
