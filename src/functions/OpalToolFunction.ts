@@ -28,9 +28,12 @@ const discoveryPayload = {
     // LP Added: query-excel endpoint to fetch campaigns from CMP Excel
     {
       'name': 'get_excel_details',
-      'description': 'Fetches and filters campaigns from the CMP Excel asset',
+      'description': 'Fetch data from excel file',
       'parameters': [
-        { 'name': 'asset_id', 'type': 'string', 'description': 'CMP asset ID', 'required': true }
+        { 'name': 'asset_id',
+          'type': 'string',
+          'description': 'CMP asset ID',
+          'required': true }
       ],
       'endpoint': '/tools/get-excel-details',
       'http_method': 'POST',
@@ -103,7 +106,8 @@ export class OpalToolFunction extends Function {
 
       const assetDetails = await getAssetFromCMP(asset_id, authData);
       const dataImportBuffer = await this.downloadFileAsBuffer(assetDetails.url);
-      const workbook = xlsx.read(dataImportBuffer);
+      const workbook = xlsx.read(dataImportBuffer, { cellDates: true });
+
 
       // Load the correct sheet
       const sheetName = 'Launch Data';
@@ -112,31 +116,63 @@ export class OpalToolFunction extends Function {
         throw new Error(`Sheet "${sheetName}" not found in Excel file.`);
       }
 
-      // Convert to JSON with proper typing
-      const rows = xlsx.utils.sheet_to_json<Record<string, any>>(sheet);
+      const rows = xlsx.utils.sheet_to_json<Record<string, any>>(sheet, { raw: false });
 
-      const filteredData = rows
-        .filter((row) => row['Campaign'] && row['Launch Date'])
-        .map((row) => ({
-          taskName: row['Campaign'],
-          // We call the helper method formatExcelDate() to convert "01/11/2024" → "Nov 1, 2024"
-          // So this change is purely for formatting the date
-          dueDate: this.formatExcelDate(row['Launch Date']),
+      // Format any Excel serial date values (like 45962) to "Oct 21, 2025"
+      const formattedRows = rows.map((row) => {
+        const formattedRow: Record<string, any> = {};
 
-          // Note: `row` represents a single row from the Excel sheet
-          // Each row is an object with column names as keys
-          // We access the "Launch Date" column for this row via row['Launch Date']
-        }));
+        for (const [key, value] of Object.entries(row)) {
+          if (typeof value === 'number' && value > 40000 && value < 60000) {
+            // Likely an Excel serial date
+            const jsDate = this.excelSerialToJSDate(value);
+            const formattedDate = jsDate.toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric'
+            });
+            formattedRow[key] = formattedDate;
+          } else {
+            formattedRow[key] = value;
+          }
+        }
 
-      logger.info('Filtered rows (task name + due date):', filteredData);
+        return formattedRow;
+      });
 
-      // Return the filtered data
-      return { filteredData };
+      logger.info('all rows', formattedRows);
+
+      return { rows: formattedRows };
+
     } catch (error: any) {
       console.error('Error fetching CMP asset data:', error.message);
       throw new Error('Failed to fetch CMP asset data');
     }
   }
+
+  // Converts Excel serial date (e.g. 45962) to JS Date
+  private excelSerialToJSDate(serial: number): Date {
+    const utcDays = Math.floor(serial - 25569); // Excel epoch offset
+    const utcValue = utcDays * 86400; // seconds
+    const dateInfo = new Date(utcValue * 1000);
+
+    const fractionalDay = serial - Math.floor(serial) + 0.0000001;
+    const totalSeconds = Math.floor(86400 * fractionalDay);
+
+    const seconds = totalSeconds % 60;
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor(totalSeconds / 60) % 60;
+
+    return new Date(
+      dateInfo.getFullYear(),
+      dateInfo.getMonth(),
+      dateInfo.getDate(),
+      hours,
+      minutes,
+      seconds
+    );
+  }
+
 
   // added this helper method to format Excel date strings
   private formatExcelDate(value: string): string {
@@ -186,5 +222,15 @@ export class OpalToolFunction extends Function {
     const res = await axios.get(url, { responseType: 'arraybuffer' });
     return Buffer.from(res.data);
   }
+
+  private getCurrentMonthAndYear(): { month: string; year: number } {
+    const now = new Date();
+    // Get full month name (e.g., October, November)
+    const month = now.toLocaleString('default', { month: 'long' });
+    const year = now.getFullYear();
+    return { month, year };
+
+  }
+
 
 }

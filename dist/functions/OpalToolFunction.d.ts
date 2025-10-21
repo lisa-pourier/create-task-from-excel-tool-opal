@@ -12,8 +12,10 @@ export declare class OpalToolFunction extends Function {
      */
     perform(): Promise<Response>;
     private queryExcel;
+    private excelSerialToJSDate;
     private formatExcelDate;
     private extractAuthData;
     private extractParameters;
     private downloadFileAsBuffer;
+    private getCurrentMonthAndYear;
 }

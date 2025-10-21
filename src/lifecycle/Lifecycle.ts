@@ -8,9 +8,7 @@ import {
   Request,
   storage,
   SubmittedFormData,
-  functions
 } from '@zaiusinc/app-sdk';
-import { AuthSection, Token } from '../data/data';
 
 
 export class Lifecycle extends AppLifecycle {
